@@ -1102,7 +1102,8 @@ const KelolaPenjualan=({db,update,user})=>{
 
   const init=()=>({pembeli:'',tempat:'',kodeBarang:'',namaBarang:'',jumlahProduk:1,
     tanggal:todayStr(),status:'PENDING',hargaJual:0,hargaModal:0,
-    kelengkapan:'1',kodeBosk:'',kodeBosk2:'',kodeStir2:'',nomorResi:'',nomorHp:''});
+    kelengkapan:'1',kodeBosk:'',kodeBosk2:'',kodeStir2:'',nomorResi:'',nomorHp:'',
+    hostNama:'ADMIN'});
 
   // Auto-hitung harga saat kode stir dipilih
   const onKode=v=>{
@@ -1141,7 +1142,12 @@ const KelolaPenjualan=({db,update,user})=>{
     const j=+form.jumlahProduk||1;
     const hj=+form.hargaJual;const hm=+form.hargaModal;
     const newId=uid();
-    const final={...form,id:newId,hostNama:'ADMIN',_src:'admin',
+    // Host bisa dipilih: ADMIN atau salah satu host live aktif
+    const pickedHost=form.hostNama||'ADMIN';
+    const isAdminHost=pickedHost==='ADMIN';
+    const hostNamaFinal=isAdminHost?'ADMIN':pickedHost;
+    const hostNamaOrder=isAdminHost?('ADMIN ('+(user?.nama||'Admin')+')'):pickedHost;
+    const final={...form,id:newId,hostNama:hostNamaFinal,_src:'admin',
       totalJual:hj*j,totalModal:hm*j,profit:hj-hm,totalProfit:(hj-hm)*j};
     update('penjualan',[...db.penjualan,final]);
     const orderEntry={
@@ -1154,7 +1160,7 @@ const KelolaPenjualan=({db,update,user})=>{
       kodeStir2:form.kodeStir2||'',
       platform:form.tempat,harga:hm,hargaJual:hj,totalHarga:hj,
       perkiraanAdmin:0,pajak:0,status:'PENDING',
-      hostNama:'ADMIN ('+(user?.nama||'Admin')+')',
+      hostNama:hostNamaOrder,
     };
     update('orderLive',[...db.orderLive,orderEntry]);
     setModal(null);
@@ -1279,12 +1285,16 @@ const KelolaPenjualan=({db,update,user})=>{
           📌 Input untuk penjualan <strong>offline / toko</strong>. Otomatis masuk antrian packing.
         </div>}
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14}}>
-          {isEdit&&<FRow label="🎤 Host Live" cols={2}>
-            <Sel value={form.hostNama||''} onChange={v=>setForm({...form,hostNama:v})}
+          <FRow label="🎤 Host Live" cols={2}>
+            <Sel value={form.hostNama||(isEdit?'':'ADMIN')} onChange={v=>setForm({...form,hostNama:v})}
               placeholder="-- Pilih Host --"
-              options={[...db.users.filter(u=>u.role==='hostlive'&&u.aktif).map(u=>({value:u.nama,label:u.nama})),{value:'ADMIN',label:'ADMIN (Manual)'}]}/>
-            <div style={{marginTop:5,fontSize:11,color:'#8B949E'}}>⚠️ Perubahan host akan tersinkron ke data order terkait.</div>
-          </FRow>}
+              options={[{value:'ADMIN',label:'ADMIN (Manual / Offline)'},...db.users.filter(u=>u.role==='hostlive'&&u.aktif).map(u=>({value:u.nama,label:'🎤 '+u.nama+' (Host Live)'}))]}/>
+            <div style={{marginTop:5,fontSize:11,color:'#8B949E'}}>
+              {isEdit
+                ?'⚠️ Perubahan host akan tersinkron ke data order terkait.'
+                :'💡 Pilih host live jika penjualan ini milik salah satu host, atau pilih ADMIN untuk penjualan offline/toko.'}
+            </div>
+          </FRow>
           <FRow label="Tanggal"><Inp value={form.tanggal} onChange={v=>setForm({...form,tanggal:v})} type="date"/></FRow>
           <FRow label="Nomor Resi (opsional)"><Inp autoFocus value={form.nomorResi} onChange={v=>setForm({...form,nomorResi:v})} placeholder="Nomor resi jika ada"/></FRow>
           <FRow label="Nama Pembeli"><Inp value={form.pembeli} onChange={v=>setForm({...form,pembeli:v})} placeholder="Nama pembeli"/></FRow>
