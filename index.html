@@ -1102,7 +1102,8 @@ const KelolaPenjualan=({db,update,user})=>{
 
   const init=()=>({pembeli:'',tempat:'',kodeBarang:'',namaBarang:'',jumlahProduk:1,
     tanggal:todayStr(),status:'PENDING',hargaJual:0,hargaModal:0,
-    kelengkapan:'1',kodeBosk:'',kodeBosk2:'',kodeStir2:'',nomorResi:'',nomorHp:''});
+    kelengkapan:'1',kodeBosk:'',kodeBosk2:'',kodeStir2:'',nomorResi:'',nomorHp:'',
+    hostNama:'ADMIN'});
 
   // Auto-hitung harga saat kode stir dipilih
   const onKode=v=>{
@@ -1141,7 +1142,12 @@ const KelolaPenjualan=({db,update,user})=>{
     const j=+form.jumlahProduk||1;
     const hj=+form.hargaJual;const hm=+form.hargaModal;
     const newId=uid();
-    const final={...form,id:newId,hostNama:'ADMIN',_src:'admin',
+    // Host bisa dipilih: ADMIN atau salah satu host live aktif
+    const pickedHost=form.hostNama||'ADMIN';
+    const isAdminHost=pickedHost==='ADMIN';
+    const hostNamaFinal=isAdminHost?'ADMIN':pickedHost;
+    const hostNamaOrder=isAdminHost?('ADMIN ('+(user?.nama||'Admin')+')'):pickedHost;
+    const final={...form,id:newId,hostNama:hostNamaFinal,_src:'admin',
       totalJual:hj*j,totalModal:hm*j,profit:hj-hm,totalProfit:(hj-hm)*j};
     update('penjualan',[...db.penjualan,final]);
     const orderEntry={
@@ -1154,7 +1160,7 @@ const KelolaPenjualan=({db,update,user})=>{
       kodeStir2:form.kodeStir2||'',
       platform:form.tempat,harga:hm,hargaJual:hj,totalHarga:hj,
       perkiraanAdmin:0,pajak:0,status:'PENDING',
-      hostNama:'ADMIN ('+(user?.nama||'Admin')+')',
+      hostNama:hostNamaOrder,
     };
     update('orderLive',[...db.orderLive,orderEntry]);
     setModal(null);
@@ -1215,16 +1221,66 @@ const KelolaPenjualan=({db,update,user})=>{
   };
 
   const changeStatus=(item,status)=>{
+    // Cari orderLive yang terhubung untuk cek apakah sudah pernah dikirim
+    const linkedOrder=db.orderLive.find(o=>
+      item._src==='hostlive' ? o.id===item.id :
+      (o.penjualanId===item.id ||
+       (!o.penjualanId && o.hostNama?.startsWith('ADMIN') &&
+        o.pembeli===item.pembeli && o.kodeBarang===item.kodeBarang && o.tanggal===item.tanggal))
+    );
+    const wasShipped=!!(linkedOrder?.tglDikirim)||item.status==='DIKIRIM';
+    const isShippingNow=status==='DIKIRIM'&&!wasShipped;
+
+    // Jika transisi ke DIKIRIM: validasi, kurangi stok, & masukkan ke packKeluar
+    if(isShippingNow){
+      const kel=String(item.kelengkapan||'1');
+      const needBosk=kel==='2'||kel==='7'||kel==='8';
+      const needStir2=kel==='6'||kel==='7';
+      const needBosk2=kel==='8';
+      if(needBosk&&!item.kodeBosk)return alert('⚠️ Kelengkapan ini butuh Boskit tapi belum dipilih!\nEdit data dulu untuk pilih boskit.');
+      if(needStir2&&!item.kodeStir2)return alert('⚠️ Kelengkapan butuh Stir #2 tapi belum dipilih!\nEdit data dulu untuk pilih Stir #2.');
+      if(needBosk2&&!item.kodeBosk2)return alert('⚠️ Kelengkapan butuh Boskit #2 tapi belum dipilih!\nEdit data dulu untuk pilih Boskit #2.');
+      let msgDetail=`\n• Stir [${item.kodeBarang}] -1`;
+      if(needStir2&&item.kodeStir2)msgDetail+=`\n• Stir #2 [${item.kodeStir2}] -1`;
+      if(needBosk&&item.kodeBosk)msgDetail+=`\n• Boskit${needBosk2?' #1':''} [${item.kodeBosk}] -1`;
+      if(needBosk2&&item.kodeBosk2)msgDetail+=`\n• Boskit #2 [${item.kodeBosk2}] -1`;
+      if(!confirm(`Tandai DIKIRIM untuk ${item.pembeli}?\n\nStok otomatis berkurang:${msgDetail}\n\nOrder juga akan masuk Tabel Keluar packing.`))return;
+      // Kurangi stok semua item yang terlibat
+      const dec=(arr,kode)=>arr.map(s=>s.kode===kode?{...s,keluar:(s.keluar||0)+1,stokAkhir:Math.max(0,(s.stokAkhir||0)-1)}:s);
+      let newStok=dec(db.stok,item.kodeBarang);
+      if(needStir2&&item.kodeStir2)newStok=dec(newStok,item.kodeStir2);
+      if(needBosk&&item.kodeBosk)newStok=dec(newStok,item.kodeBosk);
+      if(needBosk2&&item.kodeBosk2)newStok=dec(newStok,item.kodeBosk2);
+      update('stok',newStok);
+      // Tambahkan entry ke packKeluar
+      const entry={
+        id:uid(),tanggal:todayStr(),
+        platform:item.tempat||item.platform||'-',
+        kodeBarang:item.kodeBarang,
+        kodeBosk:item.kodeBosk||'',kodeStir2:item.kodeStir2||'',kodeBosk2:item.kodeBosk2||'',
+        nomorResi:(item.nomorResi&&item.nomorResi!=='-')?item.nomorResi:'-',
+        namaBarang:item.namaBarang,kelengkapan:item.kelengkapan,
+        pembeli:item.pembeli,hostNama:item.hostNama,
+        packingNama:(user?.nama||'Admin')+' (via Admin)',
+      };
+      update('packKeluar',[...db.packKeluar,entry]);
+      alert(`✅ Status DIKIRIM!\n\nStok berkurang:${msgDetail}\n\nSudah masuk Tabel Keluar packing.`);
+    }
+
+    // Field tambahan saat pertama kali dikirim (agar konsisten dengan flow packing)
+    const shipExtra=isShippingNow?{tglDikirim:todayStr(),packingNama:(user?.nama||'Admin')+' (via Admin)'}:{};
+
+    // Update record utama
     if(item._src==='hostlive'){
-      update('orderLive',db.orderLive.map(o=>o.id===item.id?{...o,status}:o));
+      update('orderLive',db.orderLive.map(o=>o.id===item.id?{...o,status,...shipExtra}:o));
     }else{
       update('penjualan',db.penjualan.map(p=>p.id===item.id?{...p,status}:p));
-      // Sinkronkan status ke orderLive yang terhubung
+      // Sinkronkan status + flag pengiriman ke orderLive yang terhubung
       update('orderLive',db.orderLive.map(o=>{
         const linked=o.penjualanId===item.id||
           (!o.penjualanId&&o.hostNama?.startsWith('ADMIN')&&
            o.pembeli===item.pembeli&&o.kodeBarang===item.kodeBarang&&o.tanggal===item.tanggal);
-        return linked?{...o,status}:o;
+        return linked?{...o,status,...shipExtra}:o;
       }));
     }
   };
@@ -1279,12 +1335,16 @@ const KelolaPenjualan=({db,update,user})=>{
           📌 Input untuk penjualan <strong>offline / toko</strong>. Otomatis masuk antrian packing.
         </div>}
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14}}>
-          {isEdit&&<FRow label="🎤 Host Live" cols={2}>
-            <Sel value={form.hostNama||''} onChange={v=>setForm({...form,hostNama:v})}
+          <FRow label="🎤 Host Live" cols={2}>
+            <Sel value={form.hostNama||(isEdit?'':'ADMIN')} onChange={v=>setForm({...form,hostNama:v})}
               placeholder="-- Pilih Host --"
-              options={[...db.users.filter(u=>u.role==='hostlive'&&u.aktif).map(u=>({value:u.nama,label:u.nama})),{value:'ADMIN',label:'ADMIN (Manual)'}]}/>
-            <div style={{marginTop:5,fontSize:11,color:'#8B949E'}}>⚠️ Perubahan host akan tersinkron ke data order terkait.</div>
-          </FRow>}
+              options={[{value:'ADMIN',label:'ADMIN (Manual / Offline)'},...db.users.filter(u=>u.role==='hostlive'&&u.aktif).map(u=>({value:u.nama,label:'🎤 '+u.nama+' (Host Live)'}))]}/>
+            <div style={{marginTop:5,fontSize:11,color:'#8B949E'}}>
+              {isEdit
+                ?'⚠️ Perubahan host akan tersinkron ke data order terkait.'
+                :'💡 Pilih host live jika penjualan ini milik salah satu host, atau pilih ADMIN untuk penjualan offline/toko.'}
+            </div>
+          </FRow>
           <FRow label="Tanggal"><Inp value={form.tanggal} onChange={v=>setForm({...form,tanggal:v})} type="date"/></FRow>
           <FRow label="Nomor Resi (opsional)"><Inp autoFocus value={form.nomorResi} onChange={v=>setForm({...form,nomorResi:v})} placeholder="Nomor resi jika ada"/></FRow>
           <FRow label="Nama Pembeli"><Inp value={form.pembeli} onChange={v=>setForm({...form,pembeli:v})} placeholder="Nama pembeli"/></FRow>
