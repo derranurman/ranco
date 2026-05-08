@@ -1221,16 +1221,66 @@ const KelolaPenjualan=({db,update,user})=>{
   };
 
   const changeStatus=(item,status)=>{
+    // Cari orderLive yang terhubung untuk cek apakah sudah pernah dikirim
+    const linkedOrder=db.orderLive.find(o=>
+      item._src==='hostlive' ? o.id===item.id :
+      (o.penjualanId===item.id ||
+       (!o.penjualanId && o.hostNama?.startsWith('ADMIN') &&
+        o.pembeli===item.pembeli && o.kodeBarang===item.kodeBarang && o.tanggal===item.tanggal))
+    );
+    const wasShipped=!!(linkedOrder?.tglDikirim)||item.status==='DIKIRIM';
+    const isShippingNow=status==='DIKIRIM'&&!wasShipped;
+
+    // Jika transisi ke DIKIRIM: validasi, kurangi stok, & masukkan ke packKeluar
+    if(isShippingNow){
+      const kel=String(item.kelengkapan||'1');
+      const needBosk=kel==='2'||kel==='7'||kel==='8';
+      const needStir2=kel==='6'||kel==='7';
+      const needBosk2=kel==='8';
+      if(needBosk&&!item.kodeBosk)return alert('⚠️ Kelengkapan ini butuh Boskit tapi belum dipilih!\nEdit data dulu untuk pilih boskit.');
+      if(needStir2&&!item.kodeStir2)return alert('⚠️ Kelengkapan butuh Stir #2 tapi belum dipilih!\nEdit data dulu untuk pilih Stir #2.');
+      if(needBosk2&&!item.kodeBosk2)return alert('⚠️ Kelengkapan butuh Boskit #2 tapi belum dipilih!\nEdit data dulu untuk pilih Boskit #2.');
+      let msgDetail=`\n• Stir [${item.kodeBarang}] -1`;
+      if(needStir2&&item.kodeStir2)msgDetail+=`\n• Stir #2 [${item.kodeStir2}] -1`;
+      if(needBosk&&item.kodeBosk)msgDetail+=`\n• Boskit${needBosk2?' #1':''} [${item.kodeBosk}] -1`;
+      if(needBosk2&&item.kodeBosk2)msgDetail+=`\n• Boskit #2 [${item.kodeBosk2}] -1`;
+      if(!confirm(`Tandai DIKIRIM untuk ${item.pembeli}?\n\nStok otomatis berkurang:${msgDetail}\n\nOrder juga akan masuk Tabel Keluar packing.`))return;
+      // Kurangi stok semua item yang terlibat
+      const dec=(arr,kode)=>arr.map(s=>s.kode===kode?{...s,keluar:(s.keluar||0)+1,stokAkhir:Math.max(0,(s.stokAkhir||0)-1)}:s);
+      let newStok=dec(db.stok,item.kodeBarang);
+      if(needStir2&&item.kodeStir2)newStok=dec(newStok,item.kodeStir2);
+      if(needBosk&&item.kodeBosk)newStok=dec(newStok,item.kodeBosk);
+      if(needBosk2&&item.kodeBosk2)newStok=dec(newStok,item.kodeBosk2);
+      update('stok',newStok);
+      // Tambahkan entry ke packKeluar
+      const entry={
+        id:uid(),tanggal:todayStr(),
+        platform:item.tempat||item.platform||'-',
+        kodeBarang:item.kodeBarang,
+        kodeBosk:item.kodeBosk||'',kodeStir2:item.kodeStir2||'',kodeBosk2:item.kodeBosk2||'',
+        nomorResi:(item.nomorResi&&item.nomorResi!=='-')?item.nomorResi:'-',
+        namaBarang:item.namaBarang,kelengkapan:item.kelengkapan,
+        pembeli:item.pembeli,hostNama:item.hostNama,
+        packingNama:(user?.nama||'Admin')+' (via Admin)',
+      };
+      update('packKeluar',[...db.packKeluar,entry]);
+      alert(`✅ Status DIKIRIM!\n\nStok berkurang:${msgDetail}\n\nSudah masuk Tabel Keluar packing.`);
+    }
+
+    // Field tambahan saat pertama kali dikirim (agar konsisten dengan flow packing)
+    const shipExtra=isShippingNow?{tglDikirim:todayStr(),packingNama:(user?.nama||'Admin')+' (via Admin)'}:{};
+
+    // Update record utama
     if(item._src==='hostlive'){
-      update('orderLive',db.orderLive.map(o=>o.id===item.id?{...o,status}:o));
+      update('orderLive',db.orderLive.map(o=>o.id===item.id?{...o,status,...shipExtra}:o));
     }else{
       update('penjualan',db.penjualan.map(p=>p.id===item.id?{...p,status}:p));
-      // Sinkronkan status ke orderLive yang terhubung
+      // Sinkronkan status + flag pengiriman ke orderLive yang terhubung
       update('orderLive',db.orderLive.map(o=>{
         const linked=o.penjualanId===item.id||
           (!o.penjualanId&&o.hostNama?.startsWith('ADMIN')&&
            o.pembeli===item.pembeli&&o.kodeBarang===item.kodeBarang&&o.tanggal===item.tanggal);
-        return linked?{...o,status}:o;
+        return linked?{...o,status,...shipExtra}:o;
       }));
     }
   };
